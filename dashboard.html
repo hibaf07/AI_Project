@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NetGuard IDS — Security Operations Center</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Exo+2:wght@300;400;600;700&display=swap');
+
+:root {
+  --bg:       #080c10;
+  --panel:    #0d1117;
+  --border:   #1a2535;
+  --accent:   #00e5ff;
+  --green:    #00ff88;
+  --red:      #ff2d55;
+  --orange:   #ff9500;
+  --yellow:   #ffd60a;
+  --purple:   #bf5af2;
+  --dim:      #3a4a5c;
+  --text:     #c9d6e3;
+  --mono:     'Share Tech Mono', monospace;
+  --sans:     'Exo 2', sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
+
+body::before {
+  content: '';
+  position: fixed; inset: 0;
+  background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,229,255,.018) 2px, rgba(0,229,255,.018) 4px);
+  pointer-events: none; z-index: 999;
+}
+
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px; height: 52px;
+  background: linear-gradient(90deg, #0d1117 0%, #0a1520 50%, #0d1117 100%);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+}
+header::after {
+  content: '';
+  position: absolute; bottom: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+}
+.header-center { text-align: center; }
+.header-title { font-size: 13px; letter-spacing: 4px; color: var(--dim); text-transform: uppercase; }
+#clock { font-family: var(--mono); font-size: 20px; color: var(--text); text-align: left; }
+.header-right { display: flex; gap: 10px; align-items: center; }
+
+.controls { display: flex; gap: 8px; align-items: center; }
+.btn {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 1px;
+  padding: 6px 14px; border: 1px solid; border-radius: 2px;
+  cursor: pointer; transition: all .2s; background: transparent; text-transform: uppercase;
+}
+.btn-start  { border-color: var(--green); color: var(--green); }
+.btn-start:hover { background: rgba(0,255,136,.12); box-shadow: 0 0 12px rgba(0,255,136,.3); }
+.btn-pause  { border-color: var(--orange); color: var(--orange); }
+.btn-pause:hover { background: rgba(255,149,0,.12); }
+.btn-tick   { border-color: var(--accent); color: var(--accent); }
+.btn-tick:hover  { background: rgba(0,229,255,.12); box-shadow: 0 0 12px rgba(0,229,255,.3); }
+.btn-reset  { border-color: var(--dim); color: var(--dim); }
+.btn-reset:hover { border-color: var(--red); color: var(--red); }
+.tick-counter { font-family: var(--mono); font-size: 13px; color: var(--accent); padding: 0 8px; }
+
+/*
+  GRID LAYOUT:
+  cols:  [220px left] [1fr center] [280px right]
+  rows:  [1fr top]   [160px bottom]
+
+  Left col:   rows 1-2 (full height) — node status + stats
+  Center:     row 1 — topology
+  Right col:  rows 1-2 (full height) — response actions + SYSTEM LOG (big)
+  Bottom center (col 2): row 2 — attack event log
+  Bottom right (col 3):  NOT used separately — right col spans full height
+  Bottom left  (col 1):  NOT used — left col spans full height
+
+  Wait — we need bottom row for attack log (col 1-2) and decision log (col 3).
+  Right col spans row 1 only, decision log sits at bottom-right row 2.
+*/
+.grid {
+  display: grid;
+  grid-template-columns: 220px 1fr 300px;
+  grid-template-rows: 1fr 180px;
+  gap: 1px;
+  background: var(--border);
+  height: calc(100vh - 52px);
+}
+
+.panel {
+  background: var(--panel);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.panel-header {
+  padding: 8px 12px; font-size: 10px; letter-spacing: 2px;
+  text-transform: uppercase; color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+  flex-shrink: 0;
+}
+.panel-body { flex: 1; overflow: hidden; padding: 10px; }
+
+/* LEFT: full height */
+.left-col {
+  grid-column: 1; grid-row: 1 / 3;
+  display: flex; flex-direction: column; gap: 1px; background: var(--border);
+}
+
+.node-list { overflow-y: auto; flex: 1; }
+.node-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 8px; font-family: var(--mono); font-size: 11px;
+  border-bottom: 1px solid rgba(26,37,53,.6); transition: background .3s;
+}
+.node-item:hover { background: rgba(0,229,255,.04); }
+.node-name { color: var(--text); }
+.node-badge { font-size: 9px; padding: 2px 6px; border-radius: 2px; letter-spacing: 1px; font-weight: 600; }
+.badge-safe       { background: rgba(0,255,136,.15); color: var(--green); }
+.badge-infected   { background: rgba(255,45,85,.2);  color: var(--red); }
+.badge-QUARANTINE { background: rgba(255,149,0,.2);  color: var(--orange); }
+.badge-ISOLATE    { background: rgba(191,90,242,.2); color: var(--purple); }
+.badge-BLOCK      { background: rgba(255,45,85,.15); color: var(--red); }
+.badge-ALERT      { background: rgba(255,214,10,.15);color: var(--yellow); }
+
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.stat-box { background: rgba(0,229,255,.04); border: 1px solid var(--border); border-radius: 3px; padding: 8px; text-align: center; }
+.stat-val { font-family: var(--mono); font-size: 20px; color: var(--accent); }
+.stat-lbl { font-size: 9px; letter-spacing: 1px; color: var(--dim); text-transform: uppercase; margin-top: 2px; }
+
+/* CENTER: topology — row 1 only */
+.center-panel { grid-column: 2; grid-row: 1; }
+#graph-svg { width: 100%; height: 100%; }
+
+#attack-badge {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 2px;
+  padding: 4px 16px; border-radius: 2px; border: 1px solid;
+  pointer-events: none; transition: all .4s;
+}
+
+/* RIGHT COL: full height — response actions + system log (big) */
+.right-col {
+  grid-column: 3; grid-row: 1 / 3;
+  display: flex; flex-direction: column; gap: 1px; background: var(--border);
+}
+
+/* System log — fills remaining right column space */
+#log-container {
+  flex: 1; overflow-y: auto; padding: 6px 10px;
+  font-family: var(--mono); font-size: 10px; line-height: 1.8;
+}
+.log-info     { color: var(--dim); }
+.log-system   { color: var(--accent); }
+.log-traffic  { color: #445566; }
+.log-warning  { color: var(--orange); }
+.log-alert    { color: var(--red); }
+.log-decision { color: var(--purple); font-weight: bold; }
+.log-reward   { color: var(--green); }
+.log-tick     { color: var(--dim); margin-right: 6px; }
+
+/* ttype bars (used for action counts) */
+.ttype-row { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; font-family: var(--mono); font-size: 10px; }
+.ttype-label { width: 70px; color: var(--dim); }
+.ttype-bar-wrap { flex: 1; height: 6px; background: var(--border); border-radius: 2px; }
+.ttype-bar { height: 100%; border-radius: 2px; transition: width .5s; }
+.ttype-count { width: 28px; text-align: right; color: var(--text); }
+
+/* BOTTOM LEFT: attack event log — col 1-2, row 2 */
+/* (col 1 is taken by left-col span, so effectively col 2 only) */
+
+/* BOTTOM RIGHT: decision log — col 3 row 2 is inside right-col span, so we don't need a separate cell */
+/* Decision log is now INSIDE right-col, at bottom, fixed height */
+.dec-feed { overflow-y: auto; }
+.dec-item {
+  padding: 6px 10px; border-bottom: 1px solid rgba(26,37,53,.6);
+  font-size: 11px; animation: fadeIn .4s ease;
+}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.dec-tick   { font-family: var(--mono); font-size: 9px; color: var(--dim); }
+.dec-action { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 1px; }
+.dec-text   { font-size: 10px; color: var(--dim); margin-top: 2px; line-height: 1.4; }
+.act-ISOLATE    { color: var(--purple); }
+.act-BLOCK      { color: var(--red); }
+.act-QUARANTINE { color: var(--orange); }
+.act-ALERT      { color: var(--yellow); }
+
+/* Attack table */
+.atk-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 10px; }
+.atk-table th { color: var(--dim); font-size: 9px; letter-spacing: 1px; text-transform: uppercase; padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.atk-table td { padding: 5px 8px; border-bottom: 1px solid rgba(26,37,53,.4); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+.atk-table tr.atk-row { animation: fadeIn .4s ease; }
+.atk-table tr.atk-row td { color: var(--red); }
+.atk-table tr.atk-row td.atk-normal { color: #667788; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.node-circle { stroke-width: 2; cursor: pointer; }
+.node-label  { font-family: var(--mono); font-size: 9px; fill: #8899aa; pointer-events: none; }
+.link { stroke: #2a4a6a; stroke-opacity: 1; stroke-width: 1.5; }
+
+@keyframes pulse { 0%,100% { r: 14; opacity: .8; } 50% { r: 20; opacity: 0; } }
+.pulse-ring { fill: none; stroke-width: 1.5; animation: pulse 1.2s ease-in-out infinite; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-center">
+    <div class="header-title">Intrusion Detection & Prevention System</div>
+    <div id="clock">--:--:--</div>
+  </div>
+  <div class="header-right">
+    <div class="controls">
+      <div class="tick-counter">TICK <span id="tick-num">0</span>/30</div>
+      <button class="btn btn-start"  onclick="startSim()">▶ AUTO</button>
+      <button class="btn btn-pause"  onclick="pauseSim()">⏸ PAUSE</button>
+      <button class="btn btn-tick"   onclick="manualTick()">⏭ STEP</button>
+      <button class="btn btn-reset"  onclick="resetSim()">↺ RESET</button>
+    </div>
+  </div>
+</header>
+
+<div id="attack-badge">MODE: IDLE</div>
+
+<div class="grid">
+
+  <!-- LEFT COL: rows 1-2 -->
+  <div class="left-col">
+    <div class="panel" style="flex:1">
+      <div class="panel-header">
+        <span>NODE STATUS</span>
+        <span id="infected-count" style="color:var(--red);font-family:var(--mono);font-size:10px;">0 INFECTED</span>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <div class="node-list" id="node-list"></div>
+      </div>
+    </div>
+    <div class="panel" style="flex:0 0 auto">
+      <div class="panel-header">SIMULATION STATS</div>
+      <div class="panel-body">
+        <div class="stat-grid">
+          <div class="stat-box"><div class="stat-val" id="s-decisions">0</div><div class="stat-lbl">Decisions</div></div>
+          <div class="stat-box"><div class="stat-val" id="s-score" style="color:var(--green)">+0</div><div class="stat-lbl">Score</div></div>
+          <div class="stat-box"><div class="stat-val" id="s-good" style="color:var(--green)">0</div><div class="stat-lbl">Good</div></div>
+          <div class="stat-box"><div class="stat-val" id="s-bad" style="color:var(--red)">0</div><div class="stat-lbl">Bad</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER: topology row 1 -->
+  <div class="panel center-panel" style="position:relative">
+    <div class="panel-header">
+      <span>NETWORK TOPOLOGY</span>
+      <span id="graph-status" style="font-family:var(--mono);font-size:10px;color:var(--dim)">MONITORING</span>
+    </div>
+    <div class="panel-body" style="padding:0;position:relative">
+      <svg id="graph-svg"></svg>
+    </div>
+  </div>
+
+  <!-- RIGHT COL: rows 1-2 full height -->
+  <!-- Top: response actions (compact) -->
+  <!-- Middle: system log (big) -->
+  <!-- Bottom: decision log (compact) -->
+  <div class="right-col">
+
+    <!-- Response Actions -->
+    <div class="panel" style="flex:0 0 auto">
+      <div class="panel-header">RESPONSE ACTIONS</div>
+      <div class="panel-body" id="action-types"></div>
+    </div>
+
+    <!-- SYSTEM LOG — big, fills space -->
+    <div class="panel" style="flex:1">
+      <div class="panel-header">
+        <span>SYSTEM LOG</span>
+        <span id="log-count" style="color:var(--dim);font-family:var(--mono);font-size:9px">0 EVENTS</span>
+      </div>
+      <div id="log-container"></div>
+    </div>
+
+    <!-- DECISION LOG — compact at bottom -->
+    <div class="panel" style="flex:0 0 200px">
+      <div class="panel-header">DECISION LOG</div>
+      <div class="panel-body" style="padding:0">
+        <div class="dec-feed" id="dec-feed" style="height:100%;overflow-y:auto"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- BOTTOM CENTER: attack event log — col 2, row 2 -->
+  <div class="panel" style="grid-column:2;grid-row:2;display:flex;flex-direction:column;">
+    <div class="panel-header">
+      <span>ATTACK EVENT LOG</span>
+      <span id="atk-count" style="color:var(--red);font-family:var(--mono);font-size:9px">0 EVENTS</span>
+    </div>
+    <div style="flex:1;overflow-y:auto;padding:0 6px;">
+      <table class="atk-table">
+        <thead><tr>
+          <th>Time</th><th>Tick</th><th>Type</th>
+          <th>Source Node</th><th>Target</th>
+          <th>Action</th><th>Confidence</th>
+        </tr></thead>
+        <tbody id="atk-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toTimeString().slice(0,8);
+}
+setInterval(updateClock, 1000); updateClock();
+
+const networkDef = {
+  router: ["server","pc1","pc2","pc3"],
+  server: ["router","pc4","pc5","pc6"],
+  pc1:   ["router","pc2","pc7"],   pc2: ["router","pc1","pc8"],
+  pc3:   ["router","pc9","pc10"],  pc4: ["server","pc11"],
+  pc5:   ["server","pc12"],        pc6: ["server","pc13"],
+  pc7:   ["pc1","pc14"],           pc8: ["pc2","pc15"],
+  pc9:   ["pc3"], pc10:["pc3"],    pc11:["pc4"], pc12:["pc5"],
+  pc13:  ["pc6"], pc14:["pc7"],    pc15:["pc8"],
+};
+
+const nodes = Object.keys(networkDef).map(id => ({ id }));
+const linkSet = new Set(); const links = [];
+for (const [src, dsts] of Object.entries(networkDef)) {
+  for (const dst of dsts) {
+    const key = [src,dst].sort().join('-');
+    if (!linkSet.has(key)) { linkSet.add(key); links.push({source:src,target:dst}); }
+  }
+}
+
+const svg = d3.select('#graph-svg');
+let W = 0, H = 0;
+
+const defs = svg.append('defs');
+const glow = defs.append('filter').attr('id','glow');
+glow.append('feGaussianBlur').attr('stdDeviation','3').attr('result','coloredBlur');
+const merge = glow.append('feMerge');
+merge.append('feMergeNode').attr('in','coloredBlur');
+merge.append('feMergeNode').attr('in','SourceGraphic');
+
+const g = svg.append('g');
+const linkG = g.append('g');
+const nodeG = g.append('g');
+
+const sim = d3.forceSimulation(nodes)
+  .force('link', d3.forceLink(links).id(d=>d.id).distance(70).strength(0.7))
+  .force('charge', d3.forceManyBody().strength(-220))
+  .force('collision', d3.forceCollide(26))
+  .force('x', d3.forceX().strength(0.04))
+  .force('y', d3.forceY().strength(0.04));
+
+function resize() {
+  const el = document.getElementById('graph-svg');
+  W = el.clientWidth; H = el.clientHeight;
+  svg.attr('viewBox', `${-W/2} ${-H/2} ${W} ${H}`);
+  sim.force('x', d3.forceX().strength(0.04)).force('y', d3.forceY().strength(0.04)).alpha(0.3).restart();
+}
+new ResizeObserver(resize).observe(document.getElementById('graph-svg'));
+setTimeout(resize, 100);
+
+const linkEl = linkG.selectAll('line').data(links).join('line')
+  .attr('class','link').attr('stroke','#2a4a6a').attr('stroke-width',1.5).attr('stroke-opacity',1);
+
+const nodeEl = nodeG.selectAll('g').data(nodes).join('g')
+  .call(d3.drag()
+    .on('start', (e,d) => { if(!e.active) sim.alphaTarget(.3).restart(); d.fx=d.x; d.fy=d.y; })
+    .on('drag',  (e,d) => { d.fx=e.x; d.fy=e.y; })
+    .on('end',   (e,d) => { if(!e.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }));
+
+nodeEl.append('circle').attr('class','node-circle').attr('r', d => d.id==='router'?14:d.id==='server'?12:8);
+nodeEl.append('text').attr('class','node-label').attr('y',22).attr('text-anchor','middle').text(d=>d.id);
+
+sim.on('tick', () => {
+  linkEl.attr('x1',d=>d.source.x).attr('y1',d=>d.source.y).attr('x2',d=>d.target.x).attr('y2',d=>d.target.y);
+  nodeEl.attr('transform',d=>`translate(${d.x},${d.y})`);
+});
+
+function nodeColor(s) {
+  return ['infected','QUARANTINE','ISOLATE','BLOCK','ALERT'].includes(s) ? '#ff2d55' : '#00ff88';
+}
+
+function updateGraph(state) {
+  nodeEl.select('circle')
+    .attr('fill', d => nodeColor(state.node_status[d.id]||'safe'))
+    .attr('stroke', d => (state.node_status[d.id]||'safe')==='safe'?'rgba(0,255,136,.3)':'rgba(255,255,255,.3)')
+    .attr('filter', d => (state.node_status[d.id]||'safe')!=='safe'?'url(#glow)':null);
+  nodeG.selectAll('.pulse-ring').remove();
+  state.infected.forEach(nid => {
+    const nd = nodes.find(n=>n.id===nid);
+    if (!nd) return;
+    nodeG.append('circle').attr('class','pulse-ring').attr('cx',nd.x).attr('cy',nd.y).attr('r',14).attr('stroke','#ff2d55').attr('fill','none');
+  });
+  if (state.swarm_source) {
+    const nd = nodes.find(n=>n.id===state.swarm_source);
+    if (nd) nodeG.append('circle').attr('class','pulse-ring').attr('cx',nd.x).attr('cy',nd.y).attr('r',18).attr('stroke','#ffd60a').attr('fill','none');
+  }
+}
+
+const attackColors = {
+  none:     { color:'#3a4a5c', border:'#3a4a5c', label:'MODE: IDLE' },
+  ddos:     { color:'#ff2d55', border:'#ff2d55', label:'⚠ DDoS ATTACK' },
+  portscan: { color:'#ffd60a', border:'#ffd60a', label:'⚠ PORT SCAN' },
+  malware:  { color:'#ff9500', border:'#ff9500', label:'☣ MALWARE' },
+};
+function updateBadge(mode) {
+  const b = document.getElementById('attack-badge');
+  const cfg = attackColors[mode] || attackColors.none;
+  b.style.color = cfg.color; b.style.borderColor = cfg.border;
+  b.style.boxShadow = mode!=='none'?`0 0 16px ${cfg.color}55`:'none';
+  b.textContent = cfg.label;
+}
+
+const allNodes = Object.keys(networkDef);
+function updateNodeList(state) {
+  document.getElementById('node-list').innerHTML = allNodes.map(n => {
+    const s = state.node_status[n]||'safe';
+    return `<div class="node-item"><span class="node-name">${n}</span><span class="node-badge badge-${s}">${s}</span></div>`;
+  }).join('');
+  document.getElementById('infected-count').textContent = `${state.infected.length} INFECTED`;
+}
+
+function updateStats(state) {
+  const rh = state.reward_history||[];
+  const score = rh.reduce((a,b)=>a+b,0);
+  document.getElementById('tick-num').textContent = state.tick;
+  document.getElementById('s-decisions').textContent = rh.length;
+  document.getElementById('s-score').textContent = (score>=0?'+':'')+score;
+  document.getElementById('s-score').style.color = score>=0?'var(--green)':'var(--red)';
+  document.getElementById('s-good').textContent = rh.filter(r=>r>0).length;
+  document.getElementById('s-bad').textContent  = rh.filter(r=>r<0).length;
+}
+
+const aColors = { ISOLATE:'#bf5af2', BLOCK:'#ff2d55', QUARANTINE:'#ff9500', ALERT:'#ffd60a' };
+function updateActionTypes(state) {
+  const ac = state.action_counts;
+  const total = Object.values(ac).reduce((a,b)=>a+b,0)||1;
+  document.getElementById('action-types').innerHTML = Object.entries(ac).map(([k,v]) =>
+    `<div class="ttype-row">
+      <span class="ttype-label">${k}</span>
+      <div class="ttype-bar-wrap"><div class="ttype-bar" style="width:${Math.round(v/total*100)}%;background:${aColors[k]||'#aaa'}"></div></div>
+      <span class="ttype-count">${v}</span>
+    </div>`).join('');
+}
+
+let lastDecCount = 0;
+function updateDecFeed(state) {
+  const feed = document.getElementById('dec-feed');
+  const decs = state.decisions||[];
+  if (decs.length === lastDecCount) return;
+  lastDecCount = decs.length;
+  feed.innerHTML = [...decs].reverse().map(d =>
+    `<div class="dec-item">
+      <div class="dec-tick">TICK ${d.tick}</div>
+      <div class="dec-action act-${d.action}">${d.action} — ${d.node}</div>
+      <div class="dec-text">${d.type} | ${d.confidence}% confidence</div>
+      <div class="dec-text" style="color:#556677">${d.explanation}</div>
+    </div>`).join('');
+}
+
+let lastLogCount = 0;
+function updateLog(state) {
+  const logs = state.logs||[];
+  if (logs.length === lastLogCount) return;
+  const container = document.getElementById('log-container');
+  logs.slice(lastLogCount).forEach(l => {
+    const div = document.createElement('div');
+    div.className = `log-${l.level}`;
+    div.innerHTML = `<span class="log-tick">[T${String(l.tick).padStart(2,'0')}]</span>${l.msg}`;
+    container.appendChild(div);
+  });
+  lastLogCount = logs.length;
+  container.scrollTop = container.scrollHeight;
+  document.getElementById('log-count').textContent = `${logs.length} EVENTS`;
+}
+
+let lastAtkCount = 0;
+function updateAtkTable(state) {
+  const decs = state.decisions||[];
+  if (decs.length === lastAtkCount) return;
+  lastAtkCount = decs.length;
+  const now = new Date();
+  document.getElementById('atk-tbody').innerHTML = [...decs].reverse().map(d => {
+    const t = new Date(now-(state.tick-d.tick)*1500);
+    const ac = d.action==='ALERT'?'var(--yellow)':'var(--red)';
+    return `<tr class="atk-row">
+      <td>${t.toTimeString().slice(0,8)}</td>
+      <td class="atk-normal">T${d.tick}</td>
+      <td>${d.type.toUpperCase()}</td>
+      <td>${d.node}</td>
+      <td class="atk-normal">server / router</td>
+      <td style="color:${ac}">${d.action}</td>
+      <td class="atk-normal">${d.confidence}%</td>
+    </tr>`;
+  }).join('');
+  document.getElementById('atk-count').textContent = `${decs.length} EVENTS`;
+}
+
+async function fetchState() {
+  try {
+    const state = await (await fetch('/state')).json();
+    updateBadge(state.attack_mode);
+    updateGraph(state);
+    updateNodeList(state);
+    updateStats(state);
+    updateActionTypes(state);
+    updateDecFeed(state);
+    updateAtkTable(state);
+    updateLog(state);
+    const gs = document.getElementById('graph-status');
+    if (state.finished)     { gs.textContent='COMPLETE'; gs.style.color='var(--green)'; }
+    else if (state.running) { gs.textContent='RUNNING';  gs.style.color='var(--accent)'; }
+    else                    { gs.textContent='PAUSED';   gs.style.color='var(--dim)'; }
+  } catch(e) { console.warn('Poll error', e); }
+}
+
+setInterval(fetchState, 800);
+fetchState();
+
+async function startSim()   { await fetch('/start', {method:'POST'}); }
+async function pauseSim()   { await fetch('/pause', {method:'POST'}); }
+async function manualTick() { await fetch('/tick',  {method:'POST'}); fetchState(); }
+async function resetSim()   { lastLogCount=0; lastDecCount=0; lastAtkCount=0; await fetch('/reset',{method:'POST'}); fetchState(); }
+</script>
+</body>
+</html>
